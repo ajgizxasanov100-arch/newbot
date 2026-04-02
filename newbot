@@ -1,0 +1,271 @@
+import asyncio
+import aiosqlite
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import CommandStart, Command
+from aiogram.types import *
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.context import FSMContext
+
+TOKEN = "8251265300:AAGtCh_noaglxzvP_5bwoxeGHgq2NJc1Kzk"
+ADMIN_ID = 6109421344
+
+bot = Bot(8251265300:AAGtCh_noaglxzvP_5bwoxeGHgq2NJc1Kzk)
+dp = Dispatcher(6109421344)
+
+# ---------- БД ----------
+async def init_db():
+    async with aiosqlite.connect("bot.db") as db:
+        await db.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY)")
+        await db.execute("CREATE TABLE IF NOT EXISTS channels (link TEXT)")
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS texts (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            photo TEXT
+        )
+        """)
+        await db.commit()
+
+# ---------- FSM ----------
+class Form(StatesGroup):
+    wait_1 = State()
+    wait_10 = State()
+    admin_text = State()
+    admin_photo = State()
+
+# ---------- КЛАВЫ ----------
+main_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🏀Бросить мяч"), KeyboardButton(text="🎯Бросок в цель")]
+    ], resize_keyboard=True
+)
+
+prize_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🎁НФТ"), KeyboardButton(text="🌟Звёзды")]
+    ], resize_keyboard=True
+)
+
+check_kb = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="✅ Проверить")]], resize_keyboard=True
+)
+
+admin_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="📊 Стата"), KeyboardButton(text="📢 Рассылка")],
+        [KeyboardButton(text="➕ Канал"), KeyboardButton(text="➖ Канал")],
+        [KeyboardButton(text="✏️ Текст"), KeyboardButton(text="🖼 Фото")]
+    ], resize_keyboard=True
+)
+
+# ---------- динамический текст ----------
+async def send_dynamic(message, key, default, kb=None):
+    async with aiosqlite.connect("bot.db") as db:
+        cur = await db.execute("SELECT value, photo FROM texts WHERE key=?", (key,))
+        row = await cur.fetchone()
+
+    text = default
+    photo = None
+
+    if row:
+        text = row[0] or default
+        photo = row[1]
+
+    if photo:
+        await message.answer_photo(photo, caption=text, reply_markup=kb)
+    else:
+        await message.answer(text, reply_markup=kb)
+
+# ---------- старт ----------
+@dp.message(CommandStart())
+async def start(m: Message):
+    async with aiosqlite.connect("bot.db") as db:
+        await db.execute("INSERT OR IGNORE INTO users VALUES (?)", (m.from_user.id,))
+        await db.commit()
+
+    await send_dynamic(m, "start",
+        "Испытайте удачу!\n\nВыберите действие 🏀🎯", main_kb)
+
+# ---------- игра ----------
+async def result(m, win):
+    if win:
+        await send_dynamic(m, "win",
+            "Поздравляю! Вы попали", prize_kb)
+    else:
+        await send_dynamic(m, "lose",
+            "Вы промахнулись", prize_kb)
+
+@dp.message(F.text == "🏀Бросить мяч")
+async def b(m: Message):
+    d = await m.answer_dice("🏀")
+    await asyncio.sleep(3)
+    await result(m, d.dice.value >= 4)
+
+@dp.message(F.text == "🎯Бросок в цель")
+async def d(m: Message):
+    d = await m.answer_dice("🎯")
+    await asyncio.sleep(3)
+    await result(m, d.dice.value == 6)
+
+# ---------- выбор ----------
+@dp.message(F.text == "🎁НФТ")
+async def nft(m: Message, s: FSMContext):
+    await s.set_state(Form.wait_1)
+    await send_dynamic(m, "nft",
+        "Отправьте 1 скрин", 
+        InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="NFT", url="https://t.me/nft/ViceCream-247699")]]
+        )
+    )
+
+@dp.message(F.text == "🌟Звёзды")
+async def stars(m: Message, s: FSMContext):
+    await s.set_state(Form.wait_1)
+    await send_dynamic(m, "stars", "Отправьте 1 скрин")
+
+# ---------- 1 скрин ----------
+@dp.message(Form.wait_1, F.photo)
+async def one(m: Message, s: FSMContext):
+    await m.react([ReactionTypeEmoji(emoji="👍")])
+    await s.set_state(Form.wait_10)
+    await s.update_data(count=0)
+    await send_dynamic(m, "after_1", "Теперь 10 скринов")
+
+# ---------- 10 скринов ----------
+@dp.message(Form.wait_10, F.photo)
+async def ten(m: Message, s: FSMContext):
+    data = await s.get_data()
+    c = data.get("count", 0) + 1
+
+    if c < 10:
+        await s.update_data(count=c)
+        return await m.answer(f"{c}/10")
+
+    await m.react([ReactionTypeEmoji(emoji="👍")])
+    await s.clear()
+
+    async with aiosqlite.connect("bot.db") as db:
+        cur = await db.execute("SELECT link FROM channels")
+        channels = await cur.fetchall()
+
+    text = "Подпишитесь:\n"
+    for ch in channels:
+        text += ch[0] + "\n"
+
+    await m.answer(text, reply_markup=check_kb)
+
+# ---------- проверка подписки ----------
+@dp.message(F.text == "✅ Проверить")
+async def check(m: Message):
+    async with aiosqlite.connect("bot.db") as db:
+        cur = await db.execute("SELECT link FROM channels")
+        channels = await cur.fetchall()
+
+    for ch in channels:
+        try:
+            member = await bot.get_chat_member(ch[0], m.from_user.id)
+            if member.status == "left":
+                return await send_dynamic(m, "not_sub", "Не подписан")
+        except:
+            pass
+
+    await send_dynamic(m, "final",
+        "Ожидайте проверку", 
+        InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="🚀Буст", url="https://t.me/boost/refetorbot")]]
+        )
+    )
+
+    # уведомление админу (анти-абуз)
+    await bot.send_message(ADMIN_ID, f"Новая заявка: {m.from_user.id}")
+
+# ---------- АДМИНКА ----------
+@dp.message(Command("admin"))
+async def admin(m: Message):
+    if m.from_user.id == ADMIN_ID:
+        await m.answer("Админка", reply_markup=admin_kb)
+
+@dp.message(F.text == "📊 Стата")
+async def stat(m: Message):
+    if m.from_user.id != ADMIN_ID: return
+    async with aiosqlite.connect("bot.db") as db:
+        cur = await db.execute("SELECT COUNT(*) FROM users")
+        count = (await cur.fetchone())[0]
+    await m.answer(f"Пользователей: {count}")
+
+@dp.message(F.text == "📢 Рассылка")
+async def br(m: Message, s: FSMContext):
+    if m.from_user.id != ADMIN_ID: return
+    await s.set_state(Form.admin_text)
+    await m.answer("Отправь текст")
+
+@dp.message(Form.admin_text)
+async def send_all(m: Message, s: FSMContext):
+    async with aiosqlite.connect("bot.db") as db:
+        cur = await db.execute("SELECT id FROM users")
+        users = await cur.fetchall()
+
+    for u in users:
+        try:
+            await bot.send_message(u[0], m.text)
+        except:
+            pass
+
+    await s.clear()
+    await m.answer("Готово")
+
+# ---------- каналы ----------
+@dp.message(F.text == "➕ Канал")
+async def add_ch(m: Message):
+    if m.from_user.id != ADMIN_ID: return
+    await m.answer("Отправь @channel")
+
+@dp.message(F.text.startswith("@"))
+async def save_ch(m: Message):
+    if m.from_user.id != ADMIN_ID: return
+    async with aiosqlite.connect("bot.db") as db:
+        await db.execute("INSERT INTO channels VALUES (?)", (m.text,))
+        await db.commit()
+    await m.answer("Добавлено")
+
+# ---------- текст ----------
+@dp.message(F.text == "✏️ Текст")
+async def edit_text(m: Message, s: FSMContext):
+    if m.from_user.id != ADMIN_ID: return
+    await s.set_state(Form.admin_text)
+    await m.answer("Формат: ключ|текст")
+
+@dp.message(Form.admin_text)
+async def save_text(m: Message, s: FSMContext):
+    key, text = m.text.split("|", 1)
+    async with aiosqlite.connect("bot.db") as db:
+        await db.execute("INSERT OR REPLACE INTO texts(key,value) VALUES(?,?)", (key, text))
+        await db.commit()
+    await s.clear()
+    await m.answer("Сохранено")
+
+# ---------- фото ----------
+@dp.message(F.text == "🖼 Фото")
+async def edit_photo(m: Message, s: FSMContext):
+    if m.from_user.id != ADMIN_ID: return
+    await s.set_state(Form.admin_photo)
+    await m.answer("Отправь: ключ + фото")
+
+@dp.message(Form.admin_photo, F.photo)
+async def save_photo(m: Message, s: FSMContext):
+    key = m.caption
+    file_id = m.photo[-1].file_id
+
+    async with aiosqlite.connect("bot.db") as db:
+        await db.execute("INSERT OR REPLACE INTO texts(key,photo) VALUES(?,?)", (key, file_id))
+        await db.commit()
+
+    await s.clear()
+    await m.answer("Фото сохранено")
+
+# ---------- запуск ----------
+async def main():
+    await init_db()
+    await dp.start_polling(bot)
+
+asyncio.run(main())
