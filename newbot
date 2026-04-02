@@ -9,8 +9,8 @@ from aiogram.fsm.context import FSMContext
 TOKEN = "8251265300:AAGtCh_noaglxzvP_5bwoxeGHgq2NJc1Kzk"
 ADMIN_ID = 6109421344
 
-bot = Bot(8251265300:AAGtCh_noaglxzvP_5bwoxeGHgq2NJc1Kzk)
-dp = Dispatcher(6109421344)
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
 
 # ---------- БД ----------
 async def init_db():
@@ -84,7 +84,7 @@ async def start(m: Message):
         await db.commit()
 
     await send_dynamic(m, "start",
-        "Испытайте удачу!\n\nВыберите действие 🏀🎯", main_kb)
+        "Испытайте удачу!\n\nВыберите, бросить мяч в кольцо или дротик в цель чтобы получить приз 🏀🎯", main_kb)
 
 # ---------- игра ----------
 async def result(m, win):
